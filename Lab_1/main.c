@@ -12,17 +12,41 @@
 #include <dirent.h>
 #endif
 
+#define COLOR_DIR "\x1b[34m"   // Синий
+#define COLOR_EXEC "\x1b[32m"  // Зеленый
+#define COLOR_LINK "\x1b[36m"  // Голубой
+#define COLOR_RESET "\x1b[0m"  // Сброс цвета
+
 int compareEntries(const void *a, const void *b) {
-    return strcmp(*(const char **)a, *(const char **)b);
+    const char *nameA = *(const char **)a;
+    const char *nameB = *(const char **)b;
+
+    // Сначала выводим файлы, начинающиеся с точки
+    if (nameA[0] == '.' && nameB[0] != '.') {
+        return -1;
+    }
+    if (nameA[0] != '.' && nameB[0] == '.') {
+        return 1;
+    }
+
+    // Сравнение с учетом регистра
+    return strcasecmp(nameA, nameB);
 }
 
-void printColor(const char *name, struct stat fileStat) {
+void printColor(const char *name, struct stat fileStat, const char *fullPath) {
     if (S_ISDIR(fileStat.st_mode)) {
-        printf("\033[34m%-20s\033[0m", name);
+        printf(COLOR_DIR "%-20s" COLOR_RESET, name);
     } else if (fileStat.st_mode & S_IXUSR) {
-        printf("\033[32m%-20s\033[0m", name);
+        printf(COLOR_EXEC "%-20s" COLOR_RESET, name);
     } else if (S_ISLNK(fileStat.st_mode)) {
-        printf("\033[36m%-20s\033[0m", name);
+        char linkTarget[1024];
+        ssize_t len = readlink(fullPath, linkTarget, sizeof(linkTarget) - 1);
+        if (len != -1) {
+            linkTarget[len] = '\0';
+            printf(COLOR_LINK "%-20s" COLOR_RESET " -> %s", name, linkTarget);
+        } else {
+            printf(COLOR_LINK "%-20s" COLOR_RESET, name);
+        }
     } else {
         printf("%-20s", name);
     }
@@ -38,7 +62,9 @@ void listFiles(const char *directory, int showHidden, int longFormat) {
     }
     char *entries[1024];
     int count = 0;
+    long long totalBlocks = 0;
 
+    // Считываем файлы
     while ((entry = readdir(dp))) {
         if (!showHidden && entry->d_name[0] == '.') {
             continue;
@@ -53,21 +79,37 @@ void listFiles(const char *directory, int showHidden, int longFormat) {
     closedir(dp);
     qsort(entries, count, sizeof(char *), compareEntries);
 
+    // Вывод общего количества блоков в длинном формате
+    if (longFormat) {
+        for (int i = 0; i < count; i++) {
+            struct stat fileStat;
+            char fullPath[1024];
+            snprintf(fullPath, sizeof(fullPath), "%s/%s", directory, entries[i]);
+            if (lstat(fullPath, &fileStat) < 0) {
+                perror("stat");
+                continue;
+            }
+            totalBlocks += fileStat.st_blocks;
+        }
+        printf("total %lld\n", totalBlocks / 2);  // Вывод общего количества блоков
+    }
+
+    // Вывод файлов
     for (int i = 0; i < count; i++) {
         struct stat fileStat;
         char fullPath[1024];
         snprintf(fullPath, sizeof(fullPath), "%s/%s", directory, entries[i]);
-        if (stat(fullPath, &fileStat) < 0) {
+        if (lstat(fullPath, &fileStat) < 0) {
             perror("stat");
             continue;
         }
         if (longFormat) {
-           // Вывод прав доступа
+            // Вывод прав доступа
             printf("%c", (S_ISDIR(fileStat.st_mode) ? 'd' : (S_ISLNK(fileStat.st_mode) ? 'l' : '-')));
             printf("%c%c%c", 
                 (fileStat.st_mode & S_IRUSR) ? 'r' : '-', 
                 (fileStat.st_mode & S_IWUSR) ? 'w' : '-', 
-                (fileStat.st_mode & S_IXUSR) ? 'x' : '-'); 
+                (fileStat.st_mode & S_IXUSR) ? 'x' : '-');
             printf("%c%c%c", 
                 (fileStat.st_mode & S_IRGRP) ? 'r' : '-',
                 (fileStat.st_mode & S_IWGRP) ? 'w' : '-',
@@ -75,20 +117,25 @@ void listFiles(const char *directory, int showHidden, int longFormat) {
             printf("%c%c%c", 
                 (fileStat.st_mode & S_IROTH) ? 'r' : '-', 
                 (fileStat.st_mode & S_IWOTH) ? 'w' : '-', 
-                (fileStat.st_mode & S_IXOTH) ? 'x' : '-'); 
+                (fileStat.st_mode & S_IXOTH) ? 'x' : '-');
             printf(" %2ld", (long)fileStat.st_nlink); 
             printf(" %-8s %-8s", getpwuid(fileStat.st_uid)->pw_name, getgrgid(fileStat.st_gid)->gr_name);
             printf(" %8lld", (long long)fileStat.st_size);
 
+            // Вывод времени
             char timebuf[100];
             strftime(timebuf, sizeof(timebuf), "%b %d %H:%M", localtime(&fileStat.st_mtime));
-            printf(" %s", timebuf); 
-            printf(" %s\n", entries[i]); 
+            printf(" %s ", timebuf); 
+
+            // Вывод имени файла с цветом и обработкой символических ссылок
+            printColor(entries[i], fileStat, fullPath);
+            printf("\n");
         } else {
-            printColor(entries[i], fileStat);
+            printColor(entries[i], fileStat, fullPath);
             printf("\n");
         }
     }
+
     for (int i = 0; i < count; i++) {
         free(entries[i]);
     }
